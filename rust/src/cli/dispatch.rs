@@ -186,6 +186,27 @@ pub fn run() {
                 }
                 return;
             }
+            "projects" => {
+                let projects = core::project_registry::list_known_projects();
+                if projects.is_empty() {
+                    println!("No projects registered yet.");
+                    println!(
+                        "Projects are discovered when lean-ctx hooks run in a project directory."
+                    );
+                } else {
+                    for (hash, entry) in &projects {
+                        let alive = core::agents::is_process_alive(entry.pid);
+                        let status = if alive { "active" } else { "stale " };
+                        let short = hash.get(..12).unwrap_or(hash);
+                        println!("{short}  {status}  {}", entry.name);
+                        println!("  root: {}", entry.root);
+                        if let Some(ref id) = entry.identity {
+                            println!("  identity: {id}");
+                        }
+                    }
+                }
+                return;
+            }
             "token-report" | "report-tokens" => {
                 let code = token_report::run_cli(&rest);
                 if code != 0 {
