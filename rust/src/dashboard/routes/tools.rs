@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::helpers::{
-    detect_project_root_for_dashboard, extract_query_param, normalize_dashboard_demo_path,
+    extract_query_param, normalize_dashboard_demo_path, project_root_for_request,
 };
 
 pub(super) fn handle(
@@ -13,7 +13,7 @@ pub(super) fn handle(
 ) -> Option<(&'static str, &'static str, String)> {
     match path {
         "/api/search-index" => {
-            let root_s = detect_project_root_for_dashboard();
+            let root_s = project_root_for_request(query_str);
             let root = Path::new(&root_s);
             let index = crate::core::bm25_index::BM25Index::load_or_build(root);
             let summary = bm25_index_summary_json(&index);
@@ -34,7 +34,7 @@ pub(super) fn handle(
                     r#"{"results":[]}"#.to_string(),
                 ))
             } else {
-                let root_s = detect_project_root_for_dashboard();
+                let root_s = project_root_for_request(query_str);
                 let root = Path::new(&root_s);
                 let index = crate::core::bm25_index::BM25Index::load_or_build(root);
                 let hits = index.search(&q, limit);
@@ -61,7 +61,7 @@ pub(super) fn handle(
                 None => r#"{"error":"missing path query parameter"}"#.to_string(),
                 Some(rel) => {
                     let task = extract_query_param(query_str, "task");
-                    let root = detect_project_root_for_dashboard();
+                    let root = project_root_for_request(query_str);
                     let root_pb = Path::new(&root);
                     let rel = normalize_dashboard_demo_path(&rel);
                     let candidate = Path::new(&rel);

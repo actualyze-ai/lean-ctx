@@ -1,4 +1,4 @@
-use super::helpers::{detect_project_root_for_dashboard, extract_query_param};
+use super::helpers::{extract_query_param, project_root_for_request};
 
 fn project_basename(abs_root: &str) -> String {
     std::path::Path::new(abs_root).file_name().map_or_else(
@@ -15,13 +15,13 @@ pub(super) fn handle(
 ) -> Option<(&'static str, &'static str, String)> {
     match path {
         "/api/heatmap" => {
-            let project_root = detect_project_root_for_dashboard();
+            let project_root = project_root_for_request(query_str);
             let index = crate::core::graph_index::load_or_build(&project_root);
             let entries = build_heatmap_json(&index);
             Some(("200 OK", "application/json", entries))
         }
         "/api/graph" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let index = crate::core::graph_index::load_or_build(&root);
             let mut val = serde_json::to_value(&index).unwrap_or_default();
             if let Some(obj) = val.as_object_mut() {
@@ -36,7 +36,7 @@ pub(super) fn handle(
             Some(("200 OK", "application/json", json))
         }
         "/api/graph/enrich" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let project_path = std::path::Path::new(&root);
             let result = match crate::core::property_graph::CodeGraph::open(&root) {
                 Ok(graph) => {
@@ -68,7 +68,7 @@ pub(super) fn handle(
             Some(("200 OK", "application/json", json))
         }
         "/api/graph/stats" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let result = if let Some(open) = crate::core::graph_provider::open_best_effort(&root) {
                 let nc = open.provider.node_count().unwrap_or(0);
                 let ec = open.provider.edge_count().unwrap_or(0);
@@ -99,7 +99,7 @@ pub(super) fn handle(
             Some(("200 OK", "application/json", json))
         }
         "/api/call-graph" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let index = std::sync::Arc::new(crate::core::graph_index::load_or_build(&root));
             match crate::core::call_graph::CallGraph::get_or_start_build(&root, index.clone()) {
                 Ok(graph) => {
@@ -131,7 +131,7 @@ pub(super) fn handle(
             Some(("200 OK", "application/json", json))
         }
         "/api/symbols" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let index = crate::core::graph_index::load_or_build(&root);
             let q = extract_query_param(query_str, "q");
             let kind = extract_query_param(query_str, "kind");
@@ -139,25 +139,25 @@ pub(super) fn handle(
             Some(("200 OK", "application/json", json))
         }
         "/api/health" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let result =
                 crate::tools::ctx_architecture::handle("health", None, &root, Some("json"));
             Some(("200 OK", "application/json", result))
         }
         "/api/hotspots" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let result =
                 crate::tools::ctx_architecture::handle("hotspots", None, &root, Some("json"));
             Some(("200 OK", "application/json", result))
         }
         "/api/communities" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let result =
                 crate::tools::ctx_architecture::handle("communities", None, &root, Some("json"));
             Some(("200 OK", "application/json", result))
         }
         "/api/graph-files" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let index = crate::core::graph_index::load_or_build(&root);
             let mut files: Vec<serde_json::Value> = index
                 .files
@@ -183,7 +183,7 @@ pub(super) fn handle(
             Some(("200 OK", "application/json", out))
         }
         "/api/smells" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let rule = extract_query_param(query_str, "rule");
             let path_filter = extract_query_param(query_str, "path");
             let result = crate::tools::ctx_smells::handle(
@@ -196,13 +196,13 @@ pub(super) fn handle(
             Some(("200 OK", "application/json", result))
         }
         "/api/smells/summary" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let result =
                 crate::tools::ctx_smells::handle("summary", None, None, &root, Some("json"));
             Some(("200 OK", "application/json", result))
         }
         "/api/routes" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let index = crate::core::graph_index::load_or_build(&root);
             let routes =
                 crate::core::route_extractor::extract_routes_from_project(&root, &index.files);

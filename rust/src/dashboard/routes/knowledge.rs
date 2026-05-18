@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use super::helpers::{detect_project_root_for_dashboard, json_err, json_ok};
+use super::helpers::{json_err, json_ok, project_root_for_request};
 
 pub(super) fn handle(
     path: &str,
@@ -10,19 +10,19 @@ pub(super) fn handle(
 ) -> Option<(&'static str, &'static str, String)> {
     match path {
         "/api/knowledge/edit" if method.eq_ignore_ascii_case("POST") => {
-            Some(post_knowledge_edit(body))
+            Some(post_knowledge_edit(body, query_str))
         }
         "/api/knowledge-relations/edit" if method.eq_ignore_ascii_case("POST") => {
-            Some(post_knowledge_relations_edit(body))
+            Some(post_knowledge_relations_edit(body, query_str))
         }
         _ => get_routes(path, query_str),
     }
 }
 
-fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static str, String)> {
+fn get_routes(path: &str, query_str: &str) -> Option<(&'static str, &'static str, String)> {
     match path {
         "/api/knowledge" => {
-            let project_root = detect_project_root_for_dashboard();
+            let project_root = project_root_for_request(query_str);
             let policy = crate::core::config::Config::load()
                 .memory_policy_effective()
                 .unwrap_or_default();
@@ -49,7 +49,7 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/knowledge-relations" => {
-            let project_root = detect_project_root_for_dashboard();
+            let project_root = project_root_for_request(query_str);
             let policy = crate::core::config::Config::load()
                 .memory_policy_effective()
                 .unwrap_or_default();
@@ -138,7 +138,7 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/gotchas" => {
-            let project_root = detect_project_root_for_dashboard();
+            let project_root = project_root_for_request(query_str);
             let store = crate::core::gotcha_tracker::GotchaStore::load(&project_root);
             let json = serde_json::to_string(&store).unwrap_or_else(|_| "{}".to_string());
             Some(("200 OK", "application/json", json))
@@ -155,7 +155,7 @@ struct KnowledgeEditReq {
     value: Option<String>,
 }
 
-fn post_knowledge_edit(body: &str) -> (&'static str, &'static str, String) {
+fn post_knowledge_edit(body: &str, query_str: &str) -> (&'static str, &'static str, String) {
     let req: KnowledgeEditReq = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -166,7 +166,7 @@ fn post_knowledge_edit(body: &str) -> (&'static str, &'static str, String) {
             );
         }
     };
-    let project_root = detect_project_root_for_dashboard();
+    let project_root = project_root_for_request(query_str);
     let policy = crate::core::config::Config::load()
         .memory_policy_effective()
         .unwrap_or_default();
@@ -250,7 +250,10 @@ struct RelationBody {
     kind: String,
 }
 
-fn post_knowledge_relations_edit(body: &str) -> (&'static str, &'static str, String) {
+fn post_knowledge_relations_edit(
+    body: &str,
+    query_str: &str,
+) -> (&'static str, &'static str, String) {
     let req: RelationEditReq = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -284,7 +287,7 @@ fn post_knowledge_relations_edit(body: &str) -> (&'static str, &'static str, Str
         );
     };
 
-    let project_root = detect_project_root_for_dashboard();
+    let project_root = project_root_for_request(query_str);
     let knowledge = crate::core::knowledge::ProjectKnowledge::load_or_create(&project_root);
     let mut graph = crate::core::knowledge_relations::KnowledgeRelationGraph::load_or_create(
         &knowledge.project_hash,

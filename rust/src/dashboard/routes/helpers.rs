@@ -84,6 +84,26 @@ pub fn is_windows_absolute_path(path: &str) -> bool {
     path.starts_with("\\\\") || path.starts_with("//")
 }
 
+/// Resolve project root from `?project={hash}` query parameter,
+/// falling back to the most recently active project, then the dashboard default.
+pub fn effective_project_root(query_str: &str) -> Option<String> {
+    if let Some(hash) = extract_query_param(query_str, "project") {
+        if let Some(meta) = crate::core::project_registry::load_project_by_hash(&hash) {
+            return Some(meta.root);
+        }
+    }
+    if let Some((_, meta)) = crate::core::project_registry::most_recent_project() {
+        return Some(meta.root);
+    }
+    None
+}
+
+/// Resolve project root for a dashboard request: tries `?project={hash}` first,
+/// then most-recent project, then legacy detection from session/cwd.
+pub fn project_root_for_request(query_str: &str) -> String {
+    effective_project_root(query_str).unwrap_or_else(detect_project_root_for_dashboard)
+}
+
 pub fn detect_project_root_for_dashboard() -> String {
     if let Ok(explicit) = std::env::var("LEAN_CTX_DASHBOARD_PROJECT") {
         if !explicit.trim().is_empty() {

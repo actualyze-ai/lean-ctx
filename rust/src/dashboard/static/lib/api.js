@@ -55,7 +55,20 @@ async function parseJsonBody(res) {
  * @param {string} path
  * @param {RequestInit & { timeoutMs?: number }} [opts]
  */
+function setActiveProject(hash) {
+  window.__LEAN_CTX_PROJECT__ = hash || '';
+}
+
+function getActiveProject() {
+  return window.__LEAN_CTX_PROJECT__ || '';
+}
+
 async function apiFetch(path, opts) {
+  const proj = getActiveProject();
+  if (proj && path.startsWith('/api/') && !path.includes('project=')) {
+    const sep = path.includes('?') ? '&' : '?';
+    path = path + sep + 'project=' + encodeURIComponent(proj);
+  }
   const timeoutMs = opts && opts.timeoutMs != null ? opts.timeoutMs : 5000;
   const token = getAuthToken();
   const ctrl = new AbortController();
@@ -93,6 +106,6 @@ async function apiFetch(path, opts) {
   }
 }
 
-window.LctxApi = { apiFetch, getAuthToken };
+window.LctxApi = { apiFetch, getAuthToken, setActiveProject, getActiveProject };
 
 export { apiFetch, getAuthToken };

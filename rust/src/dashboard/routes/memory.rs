@@ -1,7 +1,7 @@
 use chrono::Utc;
 use serde::Deserialize;
 
-use super::helpers::{detect_project_root_for_dashboard, extract_query_param, json_err, json_ok};
+use super::helpers::{extract_query_param, json_err, json_ok, project_root_for_request};
 
 pub(super) fn handle(
     path: &str,
@@ -12,7 +12,7 @@ pub(super) fn handle(
     match path {
         "/api/session/note" if method.eq_ignore_ascii_case("POST") => Some(post_session_note(body)),
         "/api/episodes/annotate" if method.eq_ignore_ascii_case("POST") => {
-            Some(post_episodes_annotate(body))
+            Some(post_episodes_annotate(body, query_str))
         }
         _ => get_routes(path, query_str),
     }
@@ -21,7 +21,7 @@ pub(super) fn handle(
 fn get_routes(path: &str, query_str: &str) -> Option<(&'static str, &'static str, String)> {
     match path {
         "/api/episodes" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let hash = crate::core::project_hash::hash_project_root(&root);
             let store = crate::core::episodic_memory::EpisodicStore::load_or_create(&hash);
             let stats = store.stats();
@@ -42,7 +42,7 @@ fn get_routes(path: &str, query_str: &str) -> Option<(&'static str, &'static str
             Some(("200 OK", "application/json", json))
         }
         "/api/procedures" => {
-            let root = detect_project_root_for_dashboard();
+            let root = project_root_for_request(query_str);
             let hash = crate::core::project_hash::hash_project_root(&root);
             let store = crate::core::procedural_memory::ProceduralStore::load_or_create(&hash);
             let task = extract_query_param(query_str, "task").or_else(|| {
@@ -239,7 +239,7 @@ struct EpisodeAnnotateReq {
     outcome: String,
 }
 
-fn post_episodes_annotate(body: &str) -> (&'static str, &'static str, String) {
+fn post_episodes_annotate(body: &str, query_str: &str) -> (&'static str, &'static str, String) {
     let req: EpisodeAnnotateReq = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -250,7 +250,7 @@ fn post_episodes_annotate(body: &str) -> (&'static str, &'static str, String) {
             );
         }
     };
-    let root = detect_project_root_for_dashboard();
+    let root = project_root_for_request(query_str);
     let hash = crate::core::project_hash::hash_project_root(&root);
     let mut store = crate::core::episodic_memory::EpisodicStore::load_or_create(&hash);
     let n = store.episodes.len();

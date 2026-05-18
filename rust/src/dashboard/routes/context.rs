@@ -1,8 +1,6 @@
 use serde::Deserialize;
 
-use super::helpers::{
-    detect_project_root_for_dashboard, json_err, json_ok, normalize_dashboard_demo_path,
-};
+use super::helpers::{json_err, json_ok, normalize_dashboard_demo_path, project_root_for_request};
 
 pub(super) fn handle(
     path: &str,
@@ -12,19 +10,58 @@ pub(super) fn handle(
 ) -> Option<(&'static str, &'static str, String)> {
     match path {
         "/api/context-overlay" if method.eq_ignore_ascii_case("POST") => {
-            Some(post_context_overlay(body))
+            Some(post_context_overlay(body, query_str))
         }
         "/api/context-policy" if method.eq_ignore_ascii_case("POST") => {
-            Some(post_context_policy(body))
+            Some(post_context_policy(body, query_str))
         }
         _ => get_routes(path, query_str),
     }
 }
 
-fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static str, String)> {
+fn load_ledger(query_str: &str) -> crate::core::context_ledger::ContextLedger {
+    match super::helpers::effective_project_root(query_str) {
+        Some(ref root) => crate::core::context_ledger::ContextLedger::load_for_project(root),
+        None => crate::core::context_ledger::ContextLedger::load(),
+    }
+}
+
+fn load_ledger_for_root(project_root: &str) -> crate::core::context_ledger::ContextLedger {
+    crate::core::context_ledger::ContextLedger::load_for_project(project_root)
+}
+
+fn resolve_data_dir(query_str: &str) -> std::path::PathBuf {
+    if let Some(ref root) = super::helpers::effective_project_root(query_str) {
+        if let Some(dir) = crate::core::data_dir::project_data_dir_if_exists(root) {
+            return dir;
+        }
+    }
+    crate::core::data_dir::lean_ctx_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
+fn get_routes(path: &str, query_str: &str) -> Option<(&'static str, &'static str, String)> {
     match path {
+        "/api/projects" => {
+            let projects = crate::core::project_registry::list_known_projects();
+            let items: Vec<serde_json::Value> = projects
+                .iter()
+                .map(|(hash, entry)| {
+                    serde_json::json!({
+                        "hash": hash,
+                        "root": entry.root,
+                        "name": entry.name,
+                        "identity": entry.identity,
+                        "last_active": entry.last_active,
+                        "pid": entry.pid,
+                        "alive": crate::core::agents::is_process_alive(entry.pid),
+                    })
+                })
+                .collect();
+            let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
+            Some(("200 OK", "application/json", json))
+        }
         "/api/context-ledger" => {
-            let ledger = crate::core::context_ledger::ContextLedger::load();
+            let ledger = load_ledger(query_str);
             let pressure = ledger.pressure();
             let payload = serde_json::json!({
                 "window_size": ledger.window_size,
@@ -44,8 +81,8 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-control" => {
-            let project_root = detect_project_root_for_dashboard();
-            let mut ledger = crate::core::context_ledger::ContextLedger::load();
+            let project_root = project_root_for_request(query_str);
+            let mut ledger = load_ledger_for_root(&project_root);
             let mut overlays = crate::core::context_overlay::OverlayStore::load_project(
                 &std::path::PathBuf::from(&project_root),
             );
@@ -65,7 +102,7 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-field" => {
-            let ledger = crate::core::context_ledger::ContextLedger::load();
+            let ledger = load_ledger(query_str);
             let field = crate::core::context_field::ContextField::new();
             let pressure = ledger.pressure();
             let effective_used =
@@ -105,8 +142,8 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-handles" => {
-            let ledger = crate::core::context_ledger::ContextLedger::load();
-            let project_root = detect_project_root_for_dashboard();
+            let project_root = project_root_for_request(query_str);
+            let ledger = load_ledger_for_root(&project_root);
             let policies = crate::core::context_policies::PolicySet::load_project(
                 &std::path::PathBuf::from(&project_root),
             );
@@ -131,7 +168,7 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-overlay-history" => {
-            let project_root = detect_project_root_for_dashboard();
+            let project_root = project_root_for_request(query_str);
             let store = crate::core::context_overlay::OverlayStore::load_project(
                 &std::path::PathBuf::from(&project_root),
             );
@@ -139,8 +176,8 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-plan" => {
-            let ledger = crate::core::context_ledger::ContextLedger::load();
-            let project_root = detect_project_root_for_dashboard();
+            let project_root = project_root_for_request(query_str);
+            let ledger = load_ledger_for_root(&project_root);
             let policies = crate::core::context_policies::PolicySet::load_project(
                 &std::path::PathBuf::from(&project_root),
             );
@@ -182,7 +219,7 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-pressure" => {
-            let ledger = crate::core::context_ledger::ContextLedger::load();
+            let ledger = load_ledger(query_str);
             let pressure = ledger.pressure();
             let adjusted_saved = ledger.adjusted_total_saved();
             let eviction_candidates = ledger.eviction_candidates_by_phi(5);
@@ -237,8 +274,7 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-radar" => {
-            let data_dir = crate::core::data_dir::lean_ctx_data_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let data_dir = resolve_data_dir(query_str);
             let client_id = crate::core::client_capabilities::load_persisted(86400)
                 .map_or_else(|| "cursor".to_string(), |c| c.client_id);
             let window = crate::core::context_radar::default_window_for_client(&client_id);
@@ -278,7 +314,9 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-transcript" => {
-            let transcript = crate::hook_handlers::load_active_transcript();
+            let project_root = super::helpers::effective_project_root(query_str);
+            let transcript =
+                crate::hook_handlers::load_active_transcript_for_project(project_root.as_deref());
             if let Some((path, conv_id)) = transcript {
                 let tp = std::path::Path::new(&path);
                 if tp.exists() {
@@ -374,7 +412,9 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             }
         }
         "/api/context-model" => {
-            let detected = crate::hook_handlers::load_detected_model();
+            let project_root = super::helpers::effective_project_root(query_str);
+            let detected =
+                crate::hook_handlers::load_detected_model_for_project(project_root.as_deref());
             let client = crate::core::client_capabilities::load_persisted(86400)
                 .map_or_else(|| "unknown".to_string(), |c| c.client_id);
             let (model, window) = detected.unwrap_or_else(|| {
@@ -391,8 +431,7 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
             Some(("200 OK", "application/json", json))
         }
         "/api/context-events" => {
-            let data_dir = crate::core::data_dir::lean_ctx_data_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let data_dir = resolve_data_dir(query_str);
             let client_id = crate::core::client_capabilities::load_persisted(86400)
                 .map_or_else(|| "cursor".to_string(), |c| c.client_id);
             let window = crate::core::context_radar::default_window_for_client(&client_id);
@@ -430,7 +469,7 @@ struct OverlayReq {
     value: Option<serde_json::Value>,
 }
 
-fn post_context_overlay(body: &str) -> (&'static str, &'static str, String) {
+fn post_context_overlay(body: &str, query_str: &str) -> (&'static str, &'static str, String) {
     let req: OverlayReq = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -449,10 +488,10 @@ fn post_context_overlay(body: &str) -> (&'static str, &'static str, String) {
             json_err("path is required"),
         );
     }
-    let project_root = detect_project_root_for_dashboard();
+    let project_root = project_root_for_request(query_str);
     let root_path = std::path::PathBuf::from(&project_root);
 
-    let mut ledger = crate::core::context_ledger::ContextLedger::load();
+    let mut ledger = load_ledger_for_root(&project_root);
     let mut overlays = crate::core::context_overlay::OverlayStore::load_project(&root_path);
 
     let action = match req.action.as_str() {
@@ -531,7 +570,7 @@ struct PolicyReq {
     rule: serde_json::Value,
 }
 
-fn post_context_policy(body: &str) -> (&'static str, &'static str, String) {
+fn post_context_policy(body: &str, query_str: &str) -> (&'static str, &'static str, String) {
     let req: PolicyReq = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
@@ -542,7 +581,7 @@ fn post_context_policy(body: &str) -> (&'static str, &'static str, String) {
             );
         }
     };
-    let project_root = detect_project_root_for_dashboard();
+    let project_root = project_root_for_request(query_str);
     let root_path = std::path::PathBuf::from(&project_root);
     let mut policies = crate::core::context_policies::PolicySet::load_project(&root_path);
 

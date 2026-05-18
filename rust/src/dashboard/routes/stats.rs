@@ -1,12 +1,15 @@
 pub(super) fn handle(
     path: &str,
-    _query_str: &str,
+    query_str: &str,
     _method: &str,
     _body: &str,
 ) -> Option<(&'static str, &'static str, String)> {
     match path {
         "/api/stats" => {
-            let store = crate::core::stats::load();
+            let store = match super::helpers::effective_project_root(query_str) {
+                Some(ref root) => crate::core::stats::load_for_project(root),
+                None => crate::core::stats::load(),
+            };
             let json = serde_json::to_string(&store).unwrap_or_else(|_| "{}".to_string());
             Some(("200 OK", "application/json", json))
         }

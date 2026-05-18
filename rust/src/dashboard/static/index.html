@@ -200,6 +200,9 @@
           <kbd>⌘K</kbd>
         </div>
       </div>
+      <div class="topbar-project" id="topbarProject" style="display:none">
+        <select id="globalProjectPicker" style="background:var(--bg-dark);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px;max-width:200px" title="Active project"></select>
+      </div>
       <div class="topbar-right-cluster">
         <div class="topbar-status" id="topbarStatus" aria-live="polite">
           <span class="ts-item" title="Daemon">
@@ -534,17 +537,18 @@ function bootCockpit() {
   };
 
   async function refreshMetrics() {
+    var apiFn = window.LctxApi && window.LctxApi.apiFetch ? window.LctxApi.apiFetch : null;
     var stats = null;
     var agents = null;
     var sess = null;
     try {
-      stats = await fetch('/api/stats', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; });
+      stats = apiFn ? await apiFn('/api/stats', { timeoutMs: 5000 }) : await fetch('/api/stats', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; });
     } catch (e) { stats = null; }
     try {
-      agents = await fetch('/api/agents', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; });
+      agents = apiFn ? await apiFn('/api/agents', { timeoutMs: 5000 }) : await fetch('/api/agents', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; });
     } catch (e) { agents = null; }
     try {
-      sess = await fetch('/api/session', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; });
+      sess = apiFn ? await apiFn('/api/session', { timeoutMs: 5000 }) : await fetch('/api/session', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; });
     } catch (e) { sess = null; }
 
     if (!daemonUp) {
@@ -591,6 +595,34 @@ function bootCockpit() {
     var ver = j && (j.version || j.current);
     if (ver) syncVersionBadge('v' + ver);
   }).catch(function () {});
+
+  // Global project picker
+  (async function initProjectPicker() {
+    try {
+      var projects = await fetch('/api/projects', { cache: 'no-store' }).then(function(r) { return r.ok ? r.json() : []; });
+      if (!Array.isArray(projects) || projects.length < 2) return;
+      var wrap = document.getElementById('topbarProject');
+      var sel = document.getElementById('globalProjectPicker');
+      if (!wrap || !sel) return;
+      wrap.style.display = '';
+      projects.forEach(function(p) {
+        var opt = document.createElement('option');
+        opt.value = p.hash;
+        opt.textContent = (p.alive ? '● ' : '○ ') + (p.name || p.hash);
+        sel.appendChild(opt);
+      });
+      if (projects.length > 0 && window.LctxApi) {
+        window.LctxApi.setActiveProject(projects[0].hash);
+      }
+      sel.addEventListener('change', function() {
+        if (window.LctxApi) window.LctxApi.setActiveProject(sel.value);
+        document.dispatchEvent(new CustomEvent('lctx:refresh'));
+        if (window.LctxRouter && window.LctxRouter.getActiveViewId) {
+          window.LctxRouter.navigateTo(window.LctxRouter.getActiveViewId());
+        }
+      });
+    } catch(e) { /* ignore */ }
+  })();
 
   pollCockpit();
   setInterval(pollCockpit, 10000);
