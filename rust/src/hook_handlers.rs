@@ -20,10 +20,16 @@ pub fn handle_observe() {
     let Some(input) = read_stdin_with_timeout(HOOK_STDIN_TIMEOUT) else {
         return;
     };
-    let Some(event) = parse_observe_event(&input) else {
+
+    let project_root = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .map(|cwd| crate::core::protocol::detect_project_root_or_cwd(&cwd));
+
+    let Some(event) = parse_observe_event(&input, project_root.as_deref()) else {
         return;
     };
-    append_radar_event(&event);
+    append_radar_event(&event, project_root.as_deref());
 }
 
 #[derive(serde::Serialize)]
@@ -45,7 +51,7 @@ struct ObserveEvent {
 
 const MAX_CONTENT_CHARS: usize = 50_000;
 
-fn parse_observe_event(input: &str) -> Option<ObserveEvent> {
+fn parse_observe_event(input: &str, project_root: Option<&str>) -> Option<ObserveEvent> {
     let v: serde_json::Value = serde_json::from_str(input).ok()?;
 
     let ts = std::time::SystemTime::now()
@@ -71,10 +77,10 @@ fn parse_observe_event(input: &str) -> Option<ObserveEvent> {
         .map(String::from);
 
     if let Some(ref m) = model {
-        persist_detected_model(m);
+        persist_detected_model(m, project_root);
     }
     if let Some(ref tp) = transcript_path {
-        persist_transcript_path(tp, conversation_id.as_deref());
+        persist_transcript_path(tp, conversation_id.as_deref(), project_root);
     }
 
     let mut event = detect_event_type(&v, ts)?;
@@ -278,7 +284,7 @@ fn estimate_tokens_value(v: &serde_json::Value) -> usize {
     }
 }
 
-fn persist_detected_model(model: &str) {
+fn persist_detected_model(model: &str, project_root: Option<&str>) {
     let m = model.to_lowercase();
     let is_bg_model = m.contains("flash")
         || m.contains("mini")
@@ -290,10 +296,6 @@ fn persist_detected_model(model: &str) {
         return;
     }
 
-    let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() else {
-        return;
-    };
-    let path = data_dir.join("detected_model.json");
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -304,11 +306,25 @@ fn persist_detected_model(model: &str) {
         "window_size": window,
         "detected_at": ts,
     });
-    if let Ok(json) = serde_json::to_string_pretty(&payload) {
+    let Ok(json) = serde_json::to_string_pretty(&payload) else {
+        return;
+    };
+
+    let write_to = |dir: &std::path::Path| {
+        let path = dir.join("detected_model.json");
         let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, &json).is_ok() {
             let _ = std::fs::rename(&tmp, &path);
         }
+    };
+
+    if let Some(root) = project_root {
+        if let Ok(dir) = crate::core::data_dir::project_data_dir(root) {
+            write_to(&dir);
+        }
+    }
+    if let Ok(dir) = crate::core::data_dir::lean_ctx_data_dir() {
+        write_to(&dir);
     }
 }
 
@@ -317,8 +333,23 @@ pub fn model_context_window(model: &str) -> usize {
 }
 
 pub fn load_detected_model() -> Option<(String, usize)> {
+    load_detected_model_for_project(None)
+}
+
+pub fn load_detected_model_for_project(project_root: Option<&str>) -> Option<(String, usize)> {
+    if let Some(root) = project_root {
+        if let Some(dir) = crate::core::data_dir::project_data_dir_if_exists(root) {
+            if let Some(result) = try_load_detected_model(&dir) {
+                return Some(result);
+            }
+        }
+    }
     let data_dir = crate::core::data_dir::lean_ctx_data_dir().ok()?;
-    let path = data_dir.join("detected_model.json");
+    try_load_detected_model(&data_dir)
+}
+
+fn try_load_detected_model(dir: &std::path::Path) -> Option<(String, usize)> {
+    let path = dir.join("detected_model.json");
     let content = std::fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
     let model = v.get("model")?.as_str()?.to_string();
@@ -334,11 +365,7 @@ pub fn load_detected_model() -> Option<(String, usize)> {
     Some((model, window))
 }
 
-fn persist_transcript_path(path: &str, conversation_id: Option<&str>) {
-    let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() else {
-        return;
-    };
-    let meta_path = data_dir.join("active_transcript.json");
+fn persist_transcript_path(path: &str, conversation_id: Option<&str>, project_root: Option<&str>) {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -348,17 +375,48 @@ fn persist_transcript_path(path: &str, conversation_id: Option<&str>) {
         "conversation_id": conversation_id,
         "updated_at": ts,
     });
-    if let Ok(json) = serde_json::to_string_pretty(&payload) {
+    let Ok(json) = serde_json::to_string_pretty(&payload) else {
+        return;
+    };
+
+    let write_to = |dir: &std::path::Path| {
+        let meta_path = dir.join("active_transcript.json");
         let tmp = meta_path.with_extension("tmp");
         if std::fs::write(&tmp, &json).is_ok() {
             let _ = std::fs::rename(&tmp, &meta_path);
         }
+    };
+
+    if let Some(root) = project_root {
+        if let Ok(dir) = crate::core::data_dir::project_data_dir(root) {
+            write_to(&dir);
+        }
+    }
+    if let Ok(dir) = crate::core::data_dir::lean_ctx_data_dir() {
+        write_to(&dir);
     }
 }
 
 pub fn load_active_transcript() -> Option<(String, Option<String>)> {
+    load_active_transcript_for_project(None)
+}
+
+pub fn load_active_transcript_for_project(
+    project_root: Option<&str>,
+) -> Option<(String, Option<String>)> {
+    if let Some(root) = project_root {
+        if let Some(dir) = crate::core::data_dir::project_data_dir_if_exists(root) {
+            if let Some(result) = try_load_active_transcript(&dir) {
+                return Some(result);
+            }
+        }
+    }
     let data_dir = crate::core::data_dir::lean_ctx_data_dir().ok()?;
-    let path = data_dir.join("active_transcript.json");
+    try_load_active_transcript(&data_dir)
+}
+
+fn try_load_active_transcript(dir: &std::path::Path) -> Option<(String, Option<String>)> {
+    let path = dir.join("active_transcript.json");
     let content = std::fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
     let tp = v.get("transcript_path")?.as_str()?.to_string();
@@ -397,34 +455,42 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
-fn append_radar_event(event: &ObserveEvent) {
-    let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() else {
-        return;
-    };
-    let radar_path = data_dir.join("context_radar.jsonl");
-
-    if event.event_type == "session" {
-        if let Ok(meta) = std::fs::metadata(&radar_path) {
-            const MAX_RADAR_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
-            if meta.len() > MAX_RADAR_SIZE {
-                let prev = data_dir.join("context_radar.prev.jsonl");
-                let _ = std::fs::rename(&radar_path, &prev);
-            }
-        }
-    }
-
+fn append_radar_event(event: &ObserveEvent, project_root: Option<&str>) {
     let Ok(line) = serde_json::to_string(event) else {
         return;
     };
 
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    if let Ok(mut f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&radar_path)
-    {
-        let _ = writeln!(f, "{line}");
+    let append_to = |dir: &std::path::Path| {
+        let radar_path = dir.join("context_radar.jsonl");
+
+        if event.event_type == "session" {
+            if let Ok(meta) = std::fs::metadata(&radar_path) {
+                const MAX_RADAR_SIZE: u64 = 10 * 1024 * 1024;
+                if meta.len() > MAX_RADAR_SIZE {
+                    let prev = dir.join("context_radar.prev.jsonl");
+                    let _ = std::fs::rename(&radar_path, &prev);
+                }
+            }
+        }
+
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&radar_path)
+        {
+            let _ = writeln!(f, "{line}");
+        }
+    };
+
+    if let Some(root) = project_root {
+        if let Ok(dir) = crate::core::data_dir::project_data_dir(root) {
+            append_to(&dir);
+        }
+    }
+    if let Ok(dir) = crate::core::data_dir::lean_ctx_data_dir() {
+        append_to(&dir);
     }
 }
 
