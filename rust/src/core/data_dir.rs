@@ -50,6 +50,30 @@ pub fn lean_ctx_data_dir() -> Result<PathBuf, String> {
     Ok(xdg_dir)
 }
 
+/// Returns the per-project data directory path: `{data_dir}/projects/{hash}/`.
+/// Returns `None` if the directory does not exist. Use for read operations.
+pub fn project_data_dir_if_exists(project_root: &str) -> Option<PathBuf> {
+    let base = lean_ctx_data_dir().ok()?;
+    let hash = crate::core::project_hash::hash_project_root(project_root);
+    let dir = base.join("projects").join(&hash);
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// Returns the per-project data directory: `{data_dir}/projects/{hash}/`.
+/// Creates the directory if it doesn't exist. Use for write operations.
+pub fn project_data_dir(project_root: &str) -> Result<PathBuf, String> {
+    let base = lean_ctx_data_dir()?;
+    let hash = crate::core::project_hash::hash_project_root(project_root);
+    let dir = base.join("projects").join(&hash);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create project dir: {e}"))?;
+    ensure_dir_permissions(&dir);
+    Ok(dir)
+}
+
 fn has_data_files(dir: &std::path::Path) -> bool {
     DATA_MARKERS.iter().any(|f| dir.join(f).exists())
 }

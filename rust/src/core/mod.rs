@@ -299,6 +299,7 @@ pub mod pipeline;
 pub mod portable_binary;
 pub mod profiles;
 pub mod project_hash;
+pub mod project_registry;
 pub mod protocol;
 pub mod provider_cache;
 pub mod providers;
