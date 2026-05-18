@@ -146,9 +146,14 @@ impl LeanCtxServer {
             workflow: Arc::new(RwLock::new(
                 crate::core::workflow::load_active().ok().flatten(),
             )),
-            ledger: Arc::new(RwLock::new(
-                crate::core::context_ledger::ContextLedger::load(),
-            )),
+            ledger: Arc::new(RwLock::new({
+                if let Some(ref root) = startup.project_root {
+                    crate::core::project_registry::upsert_project_meta(root, std::process::id());
+                    crate::core::context_ledger::ContextLedger::load_for_project(root)
+                } else {
+                    crate::core::context_ledger::ContextLedger::load()
+                }
+            })),
             pipeline_stats: Arc::new(RwLock::new(crate::core::pipeline::PipelineStats::new())),
             session_mode,
             workspace_id: if workspace_id.trim().is_empty() {

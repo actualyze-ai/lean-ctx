@@ -8,23 +8,54 @@ use super::context_field::{
 
 const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
 
+fn sanitize_agent_id(agent_id: &str) -> String {
+    agent_id
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn ledger_path(agent_id: &str) -> Result<std::path::PathBuf, String> {
-    let dir = crate::core::data_dir::lean_ctx_data_dir()?;
+    ledger_path_for_project(agent_id, None)
+}
+
+fn resolve_ledger_path(base_dir: &std::path::Path, agent_id: &str) -> std::path::PathBuf {
     if agent_id == "default" {
-        Ok(dir.join("context_ledger.json"))
+        base_dir.join("context_ledger.json")
     } else {
-        let ledger_dir = dir.join("ledger");
-        let safe_id: String = agent_id
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        Ok(ledger_dir.join(format!("{safe_id}.json")))
+        let ledger_dir = base_dir.join("ledger");
+        let safe_id = sanitize_agent_id(agent_id);
+        ledger_dir.join(format!("{safe_id}.json"))
+    }
+}
+
+fn ledger_path_for_project(
+    agent_id: &str,
+    project_root: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    let dir = match project_root {
+        Some(root) => crate::core::data_dir::project_data_dir(root)?,
+        None => crate::core::data_dir::lean_ctx_data_dir()?,
+    };
+    Ok(resolve_ledger_path(&dir, agent_id))
+}
+
+fn ledger_path_for_project_if_exists(
+    agent_id: &str,
+    project_root: &str,
+) -> Option<std::path::PathBuf> {
+    let dir = crate::core::data_dir::project_data_dir_if_exists(project_root)?;
+    let path = resolve_ledger_path(&dir, agent_id);
+    if path.exists() {
+        Some(path)
+    } else {
+        None
     }
 }
 
@@ -41,6 +72,8 @@ pub struct ContextLedger {
     pub entries: Vec<LedgerEntry>,
     pub total_tokens_sent: usize,
     pub total_tokens_saved: usize,
+    #[serde(skip)]
+    project_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +124,7 @@ impl ContextLedger {
             entries: Vec::new(),
             total_tokens_sent: 0,
             total_tokens_saved: 0,
+            project_root: None,
         }
     }
 
@@ -100,6 +134,7 @@ impl ContextLedger {
             entries: Vec::new(),
             total_tokens_sent: 0,
             total_tokens_saved: 0,
+            project_root: None,
         }
     }
 
@@ -379,7 +414,7 @@ impl ContextLedger {
     }
 
     pub fn save_for_agent(&self, agent_id: &str) {
-        if let Ok(path) = ledger_path(agent_id) {
+        if let Ok(path) = ledger_path_for_project(agent_id, self.project_root.as_deref()) {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -453,6 +488,36 @@ impl ContextLedger {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         if let Some((_model, window)) = crate::hook_handlers::load_detected_model() {
+            ledger.window_size = window;
+        }
+        let pruned = ledger.prune();
+        if pruned > 0 {
+            ledger.save_for_agent(agent_id);
+        }
+        ledger
+    }
+
+    pub fn load_for_project(project_root: &str) -> Self {
+        Self::load_for_project_agent(project_root, "default")
+    }
+
+    pub fn load_for_project_agent(project_root: &str, agent_id: &str) -> Self {
+        let mut ledger: Self = ledger_path_for_project_if_exists(agent_id, project_root)
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .or_else(|| {
+                ledger_path(agent_id)
+                    .ok()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .and_then(|s| serde_json::from_str(&s).ok())
+            })
+            .unwrap_or_default();
+
+        ledger.project_root = Some(project_root.to_string());
+
+        if let Some((_model, window)) =
+            crate::hook_handlers::load_detected_model_for_project(Some(project_root))
+        {
             ledger.window_size = window;
         }
         let pruned = ledger.prune();
