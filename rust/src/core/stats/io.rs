@@ -11,11 +11,28 @@ fn stats_path() -> Option<PathBuf> {
     stats_dir().map(|d| d.join("stats.json"))
 }
 
+fn stats_path_for_project(project_root: &str) -> Option<PathBuf> {
+    crate::core::data_dir::project_data_dir(project_root)
+        .ok()
+        .map(|d| d.join("stats.json"))
+}
+
 pub(super) fn load_from_disk() -> StatsStore {
     let Some(path) = stats_path() else {
         return StatsStore::default();
     };
 
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => StatsStore::default(),
+    }
+}
+
+pub(super) fn load_from_disk_for_project(project_root: &str) -> StatsStore {
+    let Some(dir) = crate::core::data_dir::project_data_dir_if_exists(project_root) else {
+        return StatsStore::default();
+    };
+    let path = dir.join("stats.json");
     match std::fs::read_to_string(&path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
         Err(_) => StatsStore::default(),
@@ -65,6 +82,31 @@ pub(super) fn merge_and_save(current: &StatsStore, baseline: &StatsStore) -> Sta
     }
 
     merged
+}
+
+pub(super) fn merge_and_save_for_project(
+    current: &StatsStore,
+    baseline: &StatsStore,
+    project_root: &str,
+) {
+    let Some(path) = stats_path_for_project(project_root) else {
+        return;
+    };
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let lock_path = dir.join(".stats.lock");
+    let _lock = acquire_file_lock(&lock_path);
+
+    let disk = load_from_disk_for_project(project_root);
+    let merged = apply_deltas(&disk, current, baseline);
+
+    if _lock.is_some() {
+        if let Ok(json) = serde_json::to_string(&merged) {
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
+    }
 }
 
 struct FileLockGuard(PathBuf);

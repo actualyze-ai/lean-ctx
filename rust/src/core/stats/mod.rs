@@ -9,8 +9,14 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// (current_state, baseline_from_disk, last_flush_time)
-static STATS_BUFFER: Mutex<Option<(StatsStore, StatsStore, Instant)>> = Mutex::new(None);
+struct StatsBuffer {
+    current: StatsStore,
+    baseline: StatsStore,
+    last_flush: Instant,
+    project_root: Option<String>,
+}
+
+static STATS_BUFFER: Mutex<Option<StatsBuffer>> = Mutex::new(None);
 
 const FLUSH_INTERVAL_SECS: u64 = 30;
 
@@ -18,24 +24,35 @@ pub fn load() -> StatsStore {
     let guard = STATS_BUFFER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((ref current, ref baseline, _)) = *guard {
+    if let Some(ref buf) = *guard {
         let disk = io::load_from_disk();
-        return io::apply_deltas(&disk, current, baseline);
+        return io::apply_deltas(&disk, &buf.current, &buf.baseline);
     }
     drop(guard);
     io::load_from_disk()
+}
+
+pub fn load_for_project(project_root: &str) -> StatsStore {
+    io::load_from_disk_for_project(project_root)
 }
 
 pub fn save(store: &StatsStore) {
     io::locked_write(store);
 }
 
-fn maybe_flush(store: &mut StatsStore, baseline: &mut StatsStore, last_flush: &mut Instant) {
-    if last_flush.elapsed().as_secs() >= FLUSH_INTERVAL_SECS {
-        let merged = io::merge_and_save(store, baseline);
-        *store = merged.clone();
-        *baseline = merged;
-        *last_flush = Instant::now();
+fn flush_to_disk(buf: &mut StatsBuffer) {
+    let merged = io::merge_and_save(&buf.current, &buf.baseline);
+    if let Some(ref root) = buf.project_root {
+        io::merge_and_save_for_project(&buf.current, &buf.baseline, root);
+    }
+    buf.current = merged.clone();
+    buf.baseline = merged;
+    buf.last_flush = Instant::now();
+}
+
+fn maybe_flush(buf: &mut StatsBuffer) {
+    if buf.last_flush.elapsed().as_secs() >= FLUSH_INTERVAL_SECS {
+        flush_to_disk(buf);
     }
 }
 
@@ -43,55 +60,76 @@ pub fn flush() {
     let mut guard = STATS_BUFFER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((ref mut store, ref mut baseline, ref mut last_flush)) = *guard {
-        let merged = io::merge_and_save(store, baseline);
-        *store = merged.clone();
-        *baseline = merged;
-        *last_flush = Instant::now();
+    if let Some(ref mut buf) = *guard {
+        flush_to_disk(buf);
     }
 }
 
 pub fn record(command: &str, input_tokens: usize, output_tokens: usize) {
+    record_with_project(command, input_tokens, output_tokens, None);
+}
+
+pub fn record_with_project(
+    command: &str,
+    input_tokens: usize,
+    output_tokens: usize,
+    project_root: Option<&str>,
+) {
     let mut guard = STATS_BUFFER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.is_none() {
         let disk = io::load_from_disk();
-        *guard = Some((disk.clone(), disk, Instant::now()));
+        *guard = Some(StatsBuffer {
+            current: disk.clone(),
+            baseline: disk,
+            last_flush: Instant::now(),
+            project_root: None,
+        });
     }
-    let Some((store, baseline, last_flush)) = guard.as_mut() else {
+    let Some(ref mut buf) = *guard else {
         return;
     };
 
-    let is_first_command = store.total_commands == baseline.total_commands;
+    if buf.project_root.is_none() {
+        if let Some(root) = project_root {
+            buf.project_root = Some(root.to_string());
+        }
+    }
+
+    let is_first_command = buf.current.total_commands == buf.baseline.total_commands;
     let now = chrono::Local::now();
     let today = now.format("%Y-%m-%d").to_string();
     let timestamp = now.to_rfc3339();
 
-    store.total_commands = store.total_commands.saturating_add(1);
-    store.total_input_tokens = store.total_input_tokens.saturating_add(input_tokens as u64);
-    store.total_output_tokens = store
+    buf.current.total_commands = buf.current.total_commands.saturating_add(1);
+    buf.current.total_input_tokens = buf
+        .current
+        .total_input_tokens
+        .saturating_add(input_tokens as u64);
+    buf.current.total_output_tokens = buf
+        .current
         .total_output_tokens
         .saturating_add(output_tokens as u64);
 
-    if store.first_use.is_none() {
-        store.first_use = Some(timestamp.clone());
+    if buf.current.first_use.is_none() {
+        buf.current.first_use = Some(timestamp.clone());
     }
-    store.last_use = Some(timestamp);
+    buf.current.last_use = Some(timestamp);
 
     let cmd_key = format::normalize_command(command);
-    let entry = store.commands.entry(cmd_key).or_default();
+    let entry = buf.current.commands.entry(cmd_key).or_default();
     entry.count = entry.count.saturating_add(1);
     entry.input_tokens = entry.input_tokens.saturating_add(input_tokens as u64);
     entry.output_tokens = entry.output_tokens.saturating_add(output_tokens as u64);
 
-    if let Some(day) = store.daily.last_mut() {
+    if let Some(day) = buf.current.daily.last_mut() {
         if day.date == today {
             day.commands = day.commands.saturating_add(1);
             day.input_tokens = day.input_tokens.saturating_add(input_tokens as u64);
             day.output_tokens = day.output_tokens.saturating_add(output_tokens as u64);
         } else {
-            store.daily.push(DayStats {
+            buf.current.daily.push(DayStats {
                 date: today,
                 commands: 1,
                 input_tokens: input_tokens as u64,
@@ -99,7 +137,7 @@ pub fn record(command: &str, input_tokens: usize, output_tokens: usize) {
             });
         }
     } else {
-        store.daily.push(DayStats {
+        buf.current.daily.push(DayStats {
             date: today,
             commands: 1,
             input_tokens: input_tokens as u64,
@@ -107,17 +145,14 @@ pub fn record(command: &str, input_tokens: usize, output_tokens: usize) {
         });
     }
 
-    if store.daily.len() > 90 {
-        store.daily.drain(..store.daily.len() - 90);
+    if buf.current.daily.len() > 90 {
+        buf.current.daily.drain(..buf.current.daily.len() - 90);
     }
 
     if is_first_command {
-        let merged = io::merge_and_save(store, baseline);
-        *store = merged.clone();
-        *baseline = merged;
-        *last_flush = Instant::now();
+        flush_to_disk(buf);
     } else {
-        maybe_flush(store, baseline, last_flush);
+        maybe_flush(buf);
     }
 }
 
@@ -125,19 +160,31 @@ pub fn reset_cep() {
     let mut guard = STATS_BUFFER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let prev_root = guard.as_ref().and_then(|buf| buf.project_root.clone());
     let mut store = io::load_from_disk();
     store.cep = CepStats::default();
     io::locked_write(&store);
-    *guard = Some((store.clone(), store, Instant::now()));
+    *guard = Some(StatsBuffer {
+        current: store.clone(),
+        baseline: store,
+        last_flush: Instant::now(),
+        project_root: prev_root,
+    });
 }
 
 pub fn reset_all() {
     let mut guard = STATS_BUFFER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let prev_root = guard.as_ref().and_then(|buf| buf.project_root.clone());
     let store = StatsStore::default();
     io::locked_write(&store);
-    *guard = Some((store.clone(), store, Instant::now()));
+    *guard = Some(StatsBuffer {
+        current: store.clone(),
+        baseline: store,
+        last_flush: Instant::now(),
+        project_root: prev_root,
+    });
     crate::core::heatmap::reset();
 }
 
@@ -168,11 +215,17 @@ pub fn record_cep_session(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.is_none() {
         let disk = io::load_from_disk();
-        *guard = Some((disk.clone(), disk, Instant::now()));
+        *guard = Some(StatsBuffer {
+            current: disk.clone(),
+            baseline: disk,
+            last_flush: Instant::now(),
+            project_root: None,
+        });
     }
-    let Some((store, baseline, last_flush)) = guard.as_mut() else {
+    let Some(ref mut buf) = *guard else {
         return;
     };
+    let store = &mut buf.current;
 
     let cep = &mut store.cep;
 
@@ -236,7 +289,7 @@ pub fn record_cep_session(
         cep.scores.drain(..cep.scores.len() - 100);
     }
 
-    maybe_flush(store, baseline, last_flush);
+    maybe_flush(buf);
 }
 
 #[cfg(test)]

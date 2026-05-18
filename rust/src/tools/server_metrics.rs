@@ -83,7 +83,12 @@ impl LeanCtxServer {
         );
 
         let output_tokens = original.saturating_sub(saved);
-        crate::core::stats::record(tool, original, output_tokens);
+        crate::core::stats::record_with_project(
+            tool,
+            original,
+            output_tokens,
+            self.startup_project_root.as_deref(),
+        );
 
         let mut session = self.session.write().await;
         session.record_tool_call(saved as u64, original as u64);

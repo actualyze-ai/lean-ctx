@@ -25,10 +25,17 @@ pub fn record_file_read(
     let saved = original_tokens.saturating_sub(output_tokens);
     let tool_key = format!("cli_{mode}");
 
-    stats::record(&tool_key, original_tokens, output_tokens);
+    let session = SessionState::load_latest();
+    let project_root = session.as_ref().and_then(|s| s.project_root.clone());
+    stats::record_with_project(
+        &tool_key,
+        original_tokens,
+        output_tokens,
+        project_root.as_deref(),
+    );
     heatmap::record_file_access(path, original_tokens, saved);
 
-    if let Some(mut session) = SessionState::load_latest() {
+    if let Some(mut session) = session {
         session.touch_file(path, None, mode, original_tokens);
         if is_cache_hit {
             session.record_cache_hit();
@@ -53,42 +60,61 @@ pub fn record_file_read(
         maybe_consolidate(project_root.as_deref(), calls);
     }
 
-    let mut ledger = ContextLedger::load();
+    let mut ledger = match project_root {
+        Some(ref root) => ContextLedger::load_for_project(root),
+        None => ContextLedger::load(),
+    };
     ledger.record(path, mode, original_tokens, output_tokens);
     ledger.save();
 }
 
-/// Record a search/grep operation with full Context OS side effects.
-pub fn record_search(original_tokens: usize, output_tokens: usize) {
-    stats::record("cli_grep", original_tokens, output_tokens);
-
+fn record_simple_op(
+    tool_key: &str,
+    original_tokens: usize,
+    output_tokens: usize,
+    consolidate: bool,
+) {
     if let Some(mut session) = SessionState::load_latest() {
+        stats::record_with_project(
+            tool_key,
+            original_tokens,
+            output_tokens,
+            session.project_root.as_deref(),
+        );
         session.record_command();
         let project_root = session.project_root.clone();
         let calls = session.stats.total_tool_calls;
         let _ = session.save();
 
-        maybe_consolidate(project_root.as_deref(), calls);
+        if consolidate {
+            maybe_consolidate(project_root.as_deref(), calls);
+        }
+    } else {
+        stats::record(tool_key, original_tokens, output_tokens);
     }
+}
+
+/// Record a search/grep operation with full Context OS side effects.
+pub fn record_search(original_tokens: usize, output_tokens: usize) {
+    record_simple_op("cli_grep", original_tokens, output_tokens, true);
 }
 
 /// Record a tree/ls operation with full Context OS side effects.
 pub fn record_tree(original_tokens: usize, output_tokens: usize) {
-    stats::record("cli_ls", original_tokens, output_tokens);
-
-    if let Some(mut session) = SessionState::load_latest() {
-        session.record_command();
-        let _ = session.save();
-    }
+    record_simple_op("cli_ls", original_tokens, output_tokens, false);
 }
 
 /// Record a shell command with full Context OS side effects.
 /// Always records in stats (even for track-only 0-token calls) so the dashboard
 /// command counter stays accurate. Adding 0 tokens does not inflate savings.
 pub fn record_shell_command(original_tokens: usize, output_tokens: usize) {
-    stats::record("cli_shell", original_tokens, output_tokens);
-
     if let Some(mut session) = SessionState::load_latest() {
+        stats::record_with_project(
+            "cli_shell",
+            original_tokens,
+            output_tokens,
+            session.project_root.as_deref(),
+        );
         session.record_command();
         let project_root = session.project_root.clone();
         let calls = session.stats.total_tool_calls;
@@ -97,6 +123,8 @@ pub fn record_shell_command(original_tokens: usize, output_tokens: usize) {
         if original_tokens > 0 {
             maybe_consolidate(project_root.as_deref(), calls);
         }
+    } else {
+        stats::record("cli_shell", original_tokens, output_tokens);
     }
 }
 
