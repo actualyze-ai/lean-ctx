@@ -52,7 +52,8 @@ fn compress_large_text(output: &str) -> String {
     ));
     for line in lines.iter().take(head_count) {
         if line.len() > 200 {
-            result.push_str(&line[..200]);
+            let end = line.floor_char_boundary(200);
+            result.push_str(&line[..end]);
             result.push_str("…\n");
         } else {
             result.push_str(line);
@@ -66,7 +67,8 @@ fn compress_large_text(output: &str) -> String {
         ));
         for line in lines.iter().skip(total_lines - tail_count) {
             if line.len() > 200 {
-                result.push_str(&line[..200]);
+                let end = line.floor_char_boundary(200);
+                result.push_str(&line[..end]);
                 result.push_str("…\n");
             } else {
                 result.push_str(line);
